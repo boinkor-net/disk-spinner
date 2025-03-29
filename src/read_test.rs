@@ -1,41 +1,38 @@
 //! Running the "read back" portion of the test.
 
-use crate::{crypto::GarbageGenerator, PROGRESS_STYLE};
-use anyhow::Context;
-use std::{
-    fs::OpenOptions,
-    io::{self, BufReader, Seek},
-    path::Path,
+use crate::{crypto::GarbageGenerator, metadata::TestOptions, PROGRESS_STYLE};
+use anyhow::Context as _;
+use compio::{
+    fs::File,
+    io::{self, AsyncReadExt as _, BufReader},
+    BufResult,
 };
+use std::io::Cursor;
+use std::path::Path;
 use tracing::{info_span, warn, Span};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 
 type FailedReads = usize;
 
-#[tracing::instrument(skip(buffer_size, seed))]
-pub(crate) fn read_back(
+#[tracing::instrument(skip(opts))]
+pub(crate) async fn read_back(
     dev_path: &Path,
-    buffer_size: usize,
-    seed: u64,
+    opts: &TestOptions,
 ) -> anyhow::Result<Result<(), FailedReads>> {
-    let mut blockdev = OpenOptions::new()
-        .read(true)
-        .open(dev_path)
+    let blockdev = File::open(dev_path)
+        .await
         .with_context(|| format!("Opening the device {:?} for reading", dev_path))?;
-    let capacity = blockdev.seek(io::SeekFrom::End(0))?;
-    blockdev.seek(io::SeekFrom::Start(0))?;
 
     let bar_span = info_span!("reading back");
     bar_span.pb_set_style(&PROGRESS_STYLE);
-    bar_span.pb_set_length(capacity);
+    bar_span.pb_set_length(opts.device_capacity);
     let _bar_span_handle = bar_span.enter();
 
-    let generator = GarbageGenerator::new(buffer_size, seed, |read| {
-        Span::current().pb_inc(read);
-    });
+    let generator = GarbageGenerator::new(opts.buffer_size, opts.seed, |_| {});
     let generator = BufReader::new(generator);
     let mut compare = CompareWriter::new(generator);
-    io::copy(&mut blockdev, &mut compare)?;
+    let mut blockdev = Cursor::new(blockdev);
+    io::copy(&mut blockdev, &mut compare).await?;
     if compare.mismatched > 0 {
         return Ok(Err(compare.mismatched));
     }
@@ -44,13 +41,13 @@ pub(crate) fn read_back(
 
 /// A struct that pretends to be [io::Write] by doing block-by-block comparisons against another reader.
 #[derive(Debug)]
-struct CompareWriter<R: io::Read> {
+struct CompareWriter<R> {
     compare: R,
     mismatched: usize,
     current_offset: usize,
 }
 
-impl<R: io::Read> CompareWriter<R> {
+impl<R> CompareWriter<R> {
     fn new(compare: R) -> Self {
         Self {
             compare,
@@ -60,8 +57,35 @@ impl<R: io::Read> CompareWriter<R> {
     }
 }
 
-impl<R: io::Read> io::Write for CompareWriter<R> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+impl<R: io::AsyncRead> io::AsyncWrite for CompareWriter<R> {
+    async fn write<T: compio::buf::IoBuf>(&mut self, buf: T) -> compio::BufResult<usize, T> {
+        let input = buf.as_slice();
+        let mut read = Vec::with_capacity(input.len());
+        read.resize(input.len(), 0);
+        let BufResult(_read_result, read) = self.compare.read_exact(read).await;
+        self.current_offset += input.len();
+        if read != input {
+            warn!(
+                offset = self.current_offset,
+                "Did not read back the exact bytes written"
+            );
+            self.mismatched += 1;
+        }
+        Span::current().pb_inc(read.len() as u64);
+        compio::BufResult(Ok(read.len()), buf)
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<R: std::io::Read> std::io::Write for CompareWriter<R> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut read = Vec::with_capacity(buf.len());
         read.resize(buf.len(), 0);
         self.compare.read_exact(&mut read)?;
@@ -76,7 +100,7 @@ impl<R: io::Read> io::Write for CompareWriter<R> {
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }

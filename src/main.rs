@@ -2,10 +2,15 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::Parser;
+use compio::runtime::spawn;
+use either::Either;
+use futures::stream::FuturesOrdered;
+use futures::StreamExt;
+use futures::TryStreamExt;
 use indicatif::ProgressStyle;
+use metadata::device_capacity;
+use metadata::TestOptions;
 use rand::prelude::*;
-use rayon::iter::Either;
-use rayon::prelude::*;
 use tracing::error;
 use tracing::info;
 use tracing_indicatif::IndicatifLayer;
@@ -16,6 +21,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 extern crate lazy_static;
 
 mod crypto;
+mod metadata;
 mod read_test;
 mod write_test;
 
@@ -67,7 +73,15 @@ pub(crate) struct Args {
     i_know_what_im_doing_let_me_skip_sanity_checks: bool,
 }
 
-fn main() -> anyhow::Result<()> {
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Outcome {
+    Good(PathBuf),
+    Bad(PathBuf),
+    Uncertain(PathBuf),
+}
+
+#[compio::main]
+async fn main() -> anyhow::Result<()> {
     let indicatif_layer = IndicatifLayer::new();
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer()))
@@ -75,7 +89,9 @@ fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
     let seed = args.seed.unwrap_or_else(|| thread_rng().gen());
-    let (_, failed) = args.devices.clone().into_par_iter().map(|device| {
+
+    let mut tasks = FuturesOrdered::new();
+    for device in args.devices.clone() {
         let ValidDevice {
             device,
             partition,
@@ -90,21 +106,44 @@ fn main() -> anyhow::Result<()> {
         });
         sanity_checks(&args, partition, &path, &device)?;
 
-        info!(?seed, ?partition, ?device, ?path, "Starting test");
+        info!(?partition, ?device, ?path, "Determining capacity");
+        let device_capacity = device_capacity(&path).with_context(|| format!("Determining device capacity of {:?}", &path))?;
 
-        write_test::write(&path, buffer_size, seed).context("During write test")?;
-        info!(device=?path, "write test succeeded");
-        match read_test::read_back(&path, buffer_size, seed).context("During read test")? {
-            Ok(_) => {
-                info!(device=?path, "read-back test succeeded");
-                Ok(Either::Left(()))
+        tasks.push_back(spawn(async move { 
+            info!(?seed, ?partition, ?device, ?path, "Starting test");
+
+            let opts = TestOptions{buffer_size, seed, device_capacity};
+            match write_test::write(&path, &opts).await.context("During write test"){
+                Ok(_) => {
+                    info!(device=?path, "write test succeeded");
+                    match read_test::read_back(&path, &opts).await.context("During read test") {
+                        Ok(Ok(_)) => {
+                            info!(device=?path, "read-back test succeeded");
+                            Outcome::Good(path)
+                        }
+                        Ok(Err(n)) => {
+                            error!(device=?path, bad_blocks=?n, "Data on disk is inconsistent/corrupted. THIS IS BAD - RMA THE DRIVE!");
+                            Outcome::Bad(path)
+                        }
+                        Err(error) => {
+                            error!(device=?path, %error, "read-back test resulted in an error. Uncertain if the device works.");
+                            Outcome::Uncertain(path)
+                        }
+                    }
+                }
+                Err(error) => {
+                    error!(device=?path, %error, "write test failed, skipping read-back test. Uncertain if the device works.");
+                    Outcome::Uncertain(path)
+                }
             }
-            Err(n) => {
-                error!(device=?path, bad_blocks=?n, "Data on disk is inconsistent/corrupted. THIS IS BAD - RMA THE DRIVE!");
-                Ok(Either::Right(path))
-            }
-        }
-    }).collect::<anyhow::Result<(Vec<()>, Vec<PathBuf>)>>()?;
+        }));
+    }
+    let outcomes = tasks.try_collect::<Vec<_>>().await.map_err(|err| anyhow::anyhow!("Panic in one of the data-integrity test threads: {:?}", err))?;
+    let (successful, failed) = outcomes.into_iter().partition::<Vec<_>, _>(|outcome| match outcome { Outcome::Good(_) => true, _ => false});
+
+    if successful.len() > 0 {
+        info!(devices=?successful, "Devices have succeeded validation!");
+    }
     if failed.len() > 0 {
         error!(devices=?failed, "Devices have failed validation. You should return them.");
         anyhow::bail!("Tests not successful.");
