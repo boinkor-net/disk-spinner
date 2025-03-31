@@ -4,12 +4,11 @@ use crate::{crypto::GarbageGenerator, metadata::TestOptions, PROGRESS_STYLE};
 use anyhow::Context as _;
 use compio::{
     fs::File,
-    io::{self, AsyncReadExt as _, BufReader},
-    BufResult,
+    io::{AsyncRead, AsyncReadExt as _},
 };
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::Path;
-use tracing::{info_span, warn, Span};
+use tracing::{info_span, warn};
 use tracing_indicatif::span_ext::IndicatifSpanExt;
 
 type FailedReads = usize;
@@ -23,115 +22,98 @@ pub(crate) async fn read_back(
         .await
         .with_context(|| format!("Opening the device {:?} for reading", dev_path))?;
 
-    let bar_span = info_span!("reading back");
-    bar_span.pb_set_style(&PROGRESS_STYLE);
-    bar_span.pb_set_length(opts.device_capacity);
-    let _bar_span_handle = bar_span.enter();
-
     let generator = GarbageGenerator::new(opts.buffer_size, opts.seed, |_| {});
-    let generator = BufReader::new(generator);
-    let mut compare = CompareWriter::new(generator);
-    let mut blockdev = Cursor::new(blockdev);
-    io::copy(&mut blockdev, &mut compare).await?;
-    if compare.mismatched > 0 {
-        return Ok(Err(compare.mismatched));
+    let blockdev = Cursor::new(blockdev);
+    let mismatched =
+        compare_persisted_bytes(blockdev, generator, opts.buffer_size, opts.device_capacity)
+            .await?;
+    if mismatched > 0 {
+        return Ok(Err(mismatched));
     }
     Ok(Ok(()))
 }
 
-/// A struct that pretends to be [io::Write] by doing block-by-block comparisons against another reader.
-#[derive(Debug)]
-struct CompareWriter<R> {
-    compare: R,
-    mismatched: usize,
-    current_offset: usize,
-}
+async fn compare_persisted_bytes(
+    mut blockdev: impl AsyncRead,
+    mut generator: impl Read,
+    buffer_size: usize,
+    device_capacity: u64,
+) -> anyhow::Result<usize> {
+    let bar_span = info_span!("reading back");
+    bar_span.pb_set_style(&PROGRESS_STYLE);
+    bar_span.pb_set_length(device_capacity);
+    let _bar_span_handle = bar_span.enter();
 
-impl<R> CompareWriter<R> {
-    fn new(compare: R) -> Self {
-        Self {
-            compare,
-            mismatched: 0,
-            current_offset: 0,
+    let mut mismatches = 0;
+    let mut offset = 0;
+    let mut should = Vec::with_capacity(buffer_size);
+    should.resize(buffer_size, 0);
+    let mut have = Vec::with_capacity(buffer_size);
+    have.resize(buffer_size, 0);
+    loop {
+        let res;
+        (res, have) = blockdev.read_exact(have).await.into();
+        match res {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(mismatches);
+            }
+            error => error.map_err(|e| anyhow::anyhow!("Reading bytes on disk: {:?}", e))?,
         }
-    }
-}
-
-impl<R: io::AsyncRead> io::AsyncWrite for CompareWriter<R> {
-    async fn write<T: compio::buf::IoBuf>(&mut self, buf: T) -> compio::BufResult<usize, T> {
-        let input = buf.as_slice();
-        let mut read = Vec::with_capacity(input.len());
-        read.resize(input.len(), 0);
-        let BufResult(_read_result, read) = self.compare.read_exact(read).await;
-        self.current_offset += input.len();
-        if read != input {
-            warn!(
-                offset = self.current_offset,
-                "Did not read back the exact bytes written"
-            );
-            self.mismatched += 1;
+        if have.len() == 0 {
+            return Ok(mismatches);
         }
-        Span::current().pb_inc(read.len() as u64);
-        compio::BufResult(Ok(read.len()), buf)
-    }
-
-    async fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    async fn shutdown(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<R: std::io::Read> std::io::Write for CompareWriter<R> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut read = Vec::with_capacity(buf.len());
-        read.resize(buf.len(), 0);
-        self.compare.read_exact(&mut read)?;
-        self.current_offset += buf.len();
-        if &read != buf {
-            warn!(
-                offset = self.current_offset,
-                "Did not read back the exact bytes written"
-            );
-            self.mismatched += 1;
+        offset += have.len();
+        generator
+            .read_exact(&mut should)
+            .context("Generating pseudorandom data")?;
+        if have != should {
+            warn!(offset = offset, "Did not read back the exact bytes written");
+            mismatches += 1;
         }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+        bar_span.pb_inc(have.len() as u64);
     }
 }
 
 #[cfg(test)]
 mod test {
-    use super::CompareWriter;
+    use super::compare_persisted_bytes;
     use std::io;
     use tracing_test::traced_test;
 
     #[traced_test]
-    #[test]
-    fn detects_issues() {
+    #[compio::test]
+    async fn detects_issues() {
         let input: Vec<u8> = vec![1; 1024 * 1024];
         let mut read_back: Vec<u8> = vec![1; 1024 * 1024];
         read_back[1024 * 512] = 255; // corrupt our read-back data
         let mut read_back = io::Cursor::new(read_back);
 
-        let mut compare = CompareWriter::new(io::Cursor::new(input));
-        io::copy(&mut read_back, &mut compare).expect("No io errors");
-        assert_eq!(compare.mismatched, 1);
+        let mismatched = compare_persisted_bytes(
+            &mut read_back,
+            &mut io::Cursor::new(input),
+            1024,
+            1024 * 1024,
+        )
+        .await
+        .expect("No io errors");
+        assert_eq!(mismatched, 1);
     }
 
     #[traced_test]
-    #[test]
-    fn succeeds() {
+    #[compio::test]
+    async fn succeeds() {
         let input: Vec<u8> = vec![1; 1024 * 1024];
         let read_back: Vec<u8> = vec![1; 1024 * 1024];
         let mut read_back = io::Cursor::new(read_back);
-        let mut compare = CompareWriter::new(io::Cursor::new(input));
-        io::copy(&mut read_back, &mut compare).expect("No io errors");
-        assert_eq!(compare.mismatched, 0);
+        let mismatched = compare_persisted_bytes(
+            &mut read_back,
+            &mut io::Cursor::new(input),
+            1024,
+            1024 * 1024,
+        )
+        .await
+        .expect("No io errors");
+        assert_eq!(mismatched, 0);
     }
 }
