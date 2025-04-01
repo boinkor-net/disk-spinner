@@ -79,7 +79,12 @@
               "${inputs.devshell}/extra/language/rust.nix"
               "${inputs.devshell}/extra/language/c.nix"
             ];
-            packages = [fenix.packages.${system}.stable.rust-analyzer];
+            packages =
+              [fenix.packages.${system}.stable.rust-analyzer]
+              ++ (pkgs.lib.optionals pkgs.stdenv.isLinux [
+                pkgs.perf-tools
+                pkgs.linuxKernel.packages.linux_latest_libre.perf
+              ]);
             language.rust = {
               enableDefaultToolchain = false;
               packageSet = fenix.packages.${system}.stable;
