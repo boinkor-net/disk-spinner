@@ -23,5 +23,5 @@ pub fn device_capacity(dev_path: &Path) -> anyhow::Result<u64> {
         .write(true)
         .open(dev_path)
         .context("Opening the device")?;
-    Ok(out.seek(io::SeekFrom::End(0)).context("Seeking to end")?)
+    out.seek(io::SeekFrom::End(0)).context("Seeking to end")
 }

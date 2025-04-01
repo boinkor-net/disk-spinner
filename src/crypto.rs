@@ -19,8 +19,7 @@ pub(crate) struct GarbageGenerator<P: Fn(u64)> {
 impl<P: Fn(u64)> GarbageGenerator<P> {
     /// Generate a new garbage generator for a block size from a random seed.
     pub(crate) fn new(block_size: usize, seed: u64, progress: P) -> Self {
-        let mut buf = Vec::new();
-        buf.resize(block_size, 0);
+        let buf = vec![0; block_size];
 
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let mut key = [0; 16];

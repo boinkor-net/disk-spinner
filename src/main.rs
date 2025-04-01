@@ -137,12 +137,12 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
     let outcomes = tasks.try_collect::<Vec<_>>().await.map_err(|err| anyhow::anyhow!("Panic in one of the data-integrity test threads: {:?}", err))?;
-    let (successful, failed) = outcomes.into_iter().partition::<Vec<_>, _>(|outcome| match outcome { Outcome::Good(_) => true, _ => false});
+    let (successful, failed) = outcomes.into_iter().partition::<Vec<_>, _>(|outcome| matches!(outcome, Outcome::Good(_)));
 
-    if successful.len() > 0 {
+    if !successful.is_empty() {
         info!(devices=?successful, "Devices have succeeded validation!");
     }
-    if failed.len() > 0 {
+    if !failed.is_empty() {
         error!(devices=?failed, "Devices have failed validation. You should return them.");
         anyhow::bail!("Tests not successful.");
     }

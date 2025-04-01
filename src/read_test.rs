@@ -46,10 +46,8 @@ async fn compare_persisted_bytes(
 
     let mut mismatches = 0;
     let mut offset = 0;
-    let mut should = Vec::with_capacity(buffer_size);
-    should.resize(buffer_size, 0);
-    let mut have = Vec::with_capacity(buffer_size);
-    have.resize(buffer_size, 0);
+    let mut should = vec![0; buffer_size];
+    let mut have = vec![0; buffer_size];
     loop {
         let res;
         (res, have) = blockdev.read_exact(have).await.into();
@@ -60,7 +58,7 @@ async fn compare_persisted_bytes(
             }
             error => error.map_err(|e| anyhow::anyhow!("Reading bytes on disk: {:?}", e))?,
         }
-        if have.len() == 0 {
+        if have.is_empty() {
             return Ok(mismatches);
         }
         offset += have.len();

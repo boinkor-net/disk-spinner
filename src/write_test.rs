@@ -17,7 +17,6 @@ use tracing_indicatif::span_ext::IndicatifSpanExt;
 
 #[tracing::instrument(skip(opts))]
 pub(crate) async fn write(dev_path: &Path, opts: &TestOptions) -> anyhow::Result<()> {
-    let buffer_size = opts.buffer_size;
     let bar_span = info_span!("writing");
     bar_span.pb_set_style(&PROGRESS_STYLE);
     bar_span.pb_set_length(opts.device_capacity);
@@ -30,8 +29,6 @@ pub(crate) async fn write(dev_path: &Path, opts: &TestOptions) -> anyhow::Result
             .await
             .with_context(|| format!("Opening the device {:?} for writing", dev_path))?,
     );
-    let mut buf = Vec::with_capacity(buffer_size);
-    buf.resize(buffer_size, 0);
     let (bytes_send, bytes_recv) = async_channel::bounded(1024);
     let _gen_task = spawn({
         let seed = opts.seed;
@@ -39,8 +36,7 @@ pub(crate) async fn write(dev_path: &Path, opts: &TestOptions) -> anyhow::Result
         async move {
             let mut generator = GarbageGenerator::new(buffer_size, seed, |_| {});
             loop {
-                let mut buf = Vec::with_capacity(buffer_size);
-                buf.resize(buffer_size, 0);
+                let mut buf = vec![0; buffer_size];
                 if let Err(error) = generator.fill_buffer(&mut buf) {
                     warn!(%error, "Could not fill buffer with random-ish bytes");
                     return;
