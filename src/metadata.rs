@@ -10,6 +10,7 @@ use anyhow::Context as _;
 
 pub struct TestOptions {
     pub buffer_size: usize,
+    pub crypto_buffer_size: usize,
     pub seed: u64,
     pub device_capacity: u64,
 }

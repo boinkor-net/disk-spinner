@@ -28,7 +28,11 @@ pub(crate) async fn write(dev_path: &Path, opts: &TestOptions) -> anyhow::Result
             .await
             .with_context(|| format!("Opening the device {:?} for writing", dev_path))?,
     );
-    let (bytes_send, bytes_recv) = async_channel::bounded(1024);
+    let channel_capacity = opts
+        .crypto_buffer_size
+        .checked_div(opts.buffer_size)
+        .unwrap_or(1);
+    let (bytes_send, bytes_recv) = async_channel::bounded(channel_capacity);
     let _gen_task = spawn({
         let seed = opts.seed;
         let buffer_size = opts.buffer_size;
@@ -43,7 +47,6 @@ pub(crate) async fn write(dev_path: &Path, opts: &TestOptions) -> anyhow::Result
                 match bytes_send.try_send(buf) {
                     Ok(()) => {}
                     Err(TrySendError::Full(buf)) => {
-                        info!("Byte generator pipeline stalled; blocking...");
                         if let Err(error) = bytes_send.send(buf).await {
                             warn!(%error, "Could not send random bytes across to consumer");
                             return;
