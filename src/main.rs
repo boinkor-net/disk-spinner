@@ -43,6 +43,9 @@ pub(crate) struct Args {
     #[clap(value_parser = clap::value_parser!(ValidDevice), num_args = 1..)]
     devices: Vec<ValidDevice>,
 
+    #[clap(long, short='j', default_value_t = num_cpus::get())]
+    num_threads: usize,
+
     /// Number of bytes to buffer for writing.
     ///
     /// Defaults to the physical block size of the device (or 8192 if that is unset).
@@ -90,6 +93,7 @@ fn main() -> anyhow::Result<()> {
         });
         sanity_checks(&args, partition, &path, &device)?;
 
+        rayon::ThreadPoolBuilder::new().num_threads(args.num_threads).build_global().context("Initializing rayon")?;
         info!(?seed, ?partition, ?device, ?path, "Starting test");
 
         write_test::write(&path, buffer_size, seed).context("During write test")?;
