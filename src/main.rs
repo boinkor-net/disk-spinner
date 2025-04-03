@@ -22,14 +22,10 @@ mod write_test;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-use linux::sanity_checks;
-#[cfg(target_os = "linux")]
 use linux::ValidDevice;
 
 #[cfg(not(target_os = "linux"))]
 mod other_os;
-#[cfg(not(target_os = "linux"))]
-use other_os::sanity_checks;
 #[cfg(not(target_os = "linux"))]
 use other_os::ValidDevice;
 
@@ -79,22 +75,16 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let seed = args.seed.unwrap_or_else(|| thread_rng().gen());
     let (_, failed) = args.devices.clone().into_par_iter().map(|device| {
-        let ValidDevice {
-            device,
-            partition,
-            path,
-        } = device;
-        let buffer_size = args.buffer_size.unwrap_or_else(|| {
-            device
-                .physical_block_size
-                .unwrap_or(8192)
-                .try_into()
-                .unwrap()
+        let path = device.safe_path(&args)?.to_owned();
+         let buffer_size = args.buffer_size.unwrap_or_else(|| {
+           device
+              .physical_block_size()
+               .unwrap_or(8192)
+               .try_into()
+              .unwrap()
         });
-        sanity_checks(&args, partition, &path, &device)?;
-
         rayon::ThreadPoolBuilder::new().num_threads(args.num_threads).build_global().context("Initializing rayon")?;
-        info!(?seed, ?partition, ?device, ?path, "Starting test");
+        info!(?seed, ?device, ?path, "Starting test");
 
         write_test::write(&path, buffer_size, seed).context("During write test")?;
         info!(device=?path, "write test succeeded");

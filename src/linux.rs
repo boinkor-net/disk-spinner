@@ -8,9 +8,9 @@ use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ValidDevice {
-    pub path: PathBuf,
-    pub partition: Option<u64>,
-    pub device: block_utils::Device,
+    path: PathBuf,
+    partition: Option<u64>,
+    device: block_utils::Device,
 }
 
 impl FromStr for ValidDevice {
@@ -28,42 +28,42 @@ impl FromStr for ValidDevice {
     }
 }
 
-pub(crate) fn sanity_checks(
-    args: &Args,
-    partition: Option<u64>,
-    device_path: &Path,
-    device: &block_utils::Device,
-) -> anyhow::Result<()> {
-    // Sanity checks:
-    if partition.is_some() {
-        if !args.allow_any_block_device {
-            anyhow::bail!("Device is not a whole disk but a partition - pass --allow-any-block-device to run tests anyway.");
-        } else {
-            warn!(
-                ?partition,
-                ?device_path,
-                "Testing a partition but running tests anyway."
-            );
+impl ValidDevice {
+    pub(crate) fn safe_path(&self, args: &Args) -> anyhow::Result<&Path> {
+        if self.partition.is_some() {
+            if !args.allow_any_block_device {
+                anyhow::bail!("Device is not a whole disk but a partition - pass --allow-any-block-device to run tests anyway.");
+            } else {
+                warn!(
+                    ?self.partition,
+                    ?self.path,
+                    "Testing a partition but running tests anyway."
+                );
+            }
         }
-    }
-    if device.media_type != block_utils::MediaType::Rotational {
-        if !args.allow_any_media {
-            anyhow::bail!("Device is not a rotational disk - this tool may be harmful to solid-state drives and others! Pass --allow-any-media to run anyway.");
-        } else {
-            warn!(?device.media_type, ?device_path, "Media type is not as expected but running tests anyway.");
+        if self.device.media_type != block_utils::MediaType::Rotational {
+            if !args.allow_any_media {
+                anyhow::bail!("Device is not a rotational disk - this tool may be harmful to solid-state drives and others! Pass --allow-any-media to run anyway.");
+            } else {
+                warn!(?self.device.media_type, ?self.path, "Media type is not as expected but running tests anyway.");
+            }
         }
-    }
-    let child_partitions: Vec<PathBuf> = block_utils::get_block_partitions_iter()?
-        .filter(|part_path| {
-            part_path
-                .file_name()
-                .map(|name| name.to_string_lossy().starts_with(&device.name))
-                .unwrap_or(false)
-        })
-        .collect();
+        let child_partitions: Vec<PathBuf> = block_utils::get_block_partitions_iter()?
+            .filter(|part_path| {
+                part_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().starts_with(&self.device.name))
+                    .unwrap_or(false)
+            })
+            .collect();
 
-    if child_partitions.len() > 0 {
-        anyhow::bail!("Detected child partitions on the device - I won't help you destroy an in-use drive: Delete those partitions yourself. Partitions found: {:?}", child_partitions);
+        if child_partitions.len() > 0 {
+            anyhow::bail!("Detected child partitions on the device - I won't help you destroy an in-use drive: Delete those partitions yourself. Partitions found: {:?}", child_partitions);
+        }
+        Ok(&self.path)
     }
-    Ok(())
+
+    pub(crate) fn physical_block_size(&self) -> Option<u64> {
+        self.device.physical_block_size
+    }
 }
