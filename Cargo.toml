@@ -15,9 +15,9 @@ shishua-cli = []
 [dependencies]
 aes = "0.8.4"
 aligned-buffer = "0.2.0"
-anyhow = "1.0.99"
+anyhow = "1.0.100"
 blake3 = "1.8.2"
-clap = { version = "4.5.45", features = ["derive"] }
+clap = { version = "4.5.49", features = ["derive"] }
 ctr = "0.9.2"
 indicatif = "0.18.0"
 lazy_static = "1.5.0"
@@ -27,7 +27,7 @@ rand_chacha = "0.9.0"
 rayon = "1.11.0"
 tracing = "0.1.41"
 tracing-indicatif = "0.3.13"
-tracing-subscriber = "0.3.19"
+tracing-subscriber = "0.3.20"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 block-utils = "0.11.1"
