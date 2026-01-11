@@ -12,9 +12,7 @@ pub const OPEN_FLAGS: i32 = libc::O_EXCL;
 pub type IOBuffer = UniqueAlignedBuffer<1>;
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct DeviceMetadata {
-    pub physical_block_size: Option<u64>,
-}
+pub(crate) struct DeviceMetadata {}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ValidDevice {
