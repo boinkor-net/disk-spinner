@@ -56,11 +56,9 @@ pub(crate) struct Args {
     #[clap(value_parser = clap::value_parser!(ValidDevice), num_args = 1..)]
     devices: Vec<ValidDevice>,
 
-    /// Number of bytes to buffer for writing.
-    ///
-    /// Defaults to the physical block size of the device (or 8192 if that is unset).
-    #[clap(long)]
-    buffer_size: Option<usize>,
+    /// Number of bytes to buffer from the PRNG for writing or reading.
+    #[clap(long, default_value_t = 16*1024*1024)]
+    buffer_size: usize,
 
     #[clap(long, default_value_t, value_parser = clap::value_parser!(GarbageGeneratorVariant))]
     generator: GarbageGeneratorVariant,
@@ -97,13 +95,7 @@ fn main() -> anyhow::Result<()> {
             partition,
             path,
         } = device;
-        let buffer_size = args.buffer_size.unwrap_or_else(|| {
-            device
-                .physical_block_size
-                .unwrap_or(8192)
-                .try_into()
-                .unwrap()
-        });
+        let buffer_size = args.buffer_size;
         sanity_checks(&args, partition, &path, &device)?;
 
         info!(?seed, ?partition, ?device, ?path, "Starting test");
