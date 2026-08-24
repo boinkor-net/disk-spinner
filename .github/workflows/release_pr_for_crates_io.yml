@@ -18,10 +18,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: chainguard-dev/actions/setup-gitsign@main
       - name: Install cargo-release
-        uses: taiki-e/cache-cargo-install-action@v3
+        uses: taiki-e/cache-cargo-install-action@v2
         with:
           tool: cargo-release
-      - uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+      - uses: awalsh128/cache-apt-pkgs-action@v1.4.3
         with:
           packages: "libudev-dev"
           version: 1.0
